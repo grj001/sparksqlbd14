@@ -2,11 +2,15 @@ package com.zhiyou.bd14.homework_20171124
 
 import java.sql.{DriverManager, ResultSet}
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.hadoop.io.{IntWritable, Text}
 import org.apache.hadoop.mapred.TextOutputFormat
 import org.apache.spark.rdd.{JdbcRDD, PairRDDFunctions, RDD}
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.{SparkConf, SparkContext}
 
+import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
 
 object BussinessInfo {
@@ -37,18 +41,10 @@ object BussinessInfo {
 
   //////////////////////////////////////////////////////////////////////////////
 
-  def getCustomersInfoFromMysql() = {
-    val sql = "select * from customers where customer_id >= ? and customer_id <=?"
-    val mysqlRDD = new JdbcRDD(sc, getMysqlConnection, sql, 1, 68883, 2, x => x)
-
-    mysqlRDD.foreach(x => {
-      println(s"${x.getInt("customer_id")}")
-    })
-  }
 
   def getCustomersRDD(): RDD[(String, String)] = {
     val sql = "select * from customers where customer_id >= ? and customer_id <=?"
-    val mysqlRDD = new JdbcRDD(sc, getMysqlConnection, sql, 1, 68883, 2, x => {
+    val mysqlRDD = new JdbcRDD(sc, getMysqlConnection, sql, 1, 12435, 2, x => {
       (x.getInt("customer_id").toString -> x.getString("customer_fname"))
     })
     mysqlRDD
@@ -56,19 +52,10 @@ object BussinessInfo {
 
   ///////////////////////////////////////////////////////////////////////////////
 
-  def getOrdersInfoFromMysql() = {
-    val sql = "select * from orders where order_id>=? and order_id<=?"
-    val mysqlRDD = new JdbcRDD(sc, getMysqlConnection, sql, 1, 12435, 2, x => x)
-
-
-    mysqlRDD.foreach(x => {
-      println(s"${x.getInt("order_id")}")
-    })
-  }
 
   def getOrdersRDD(): RDD[(String, String)] = {
     val sql = "select * from orders where order_id>=? and order_id<=?"
-    val mysqlRDD = new JdbcRDD(sc, getMysqlConnection, sql, 1, 12435, 2, x => {
+    val mysqlRDD = new JdbcRDD(sc, getMysqlConnection, sql, 1, 68883, 2, x => {
       (x.getInt("order_customer_id").toString -> x.getInt("order_id").toString)
     })
     mysqlRDD
@@ -145,28 +132,126 @@ object BussinessInfo {
   // 统计出每个用户的订单数, 消费总金额, 购买过的产品类型的数量
   def getCustomerInfos() = {
     // order_items中有product_id(产品类型, 每个item的消费总金额)
-    //根据order_id进行groupBy, 和count能够得到 结果
-    //order_items 左连接 orders
-    // order_items_order_id
+    // 根据order_id进行groupBy, 和count能够得到 结果
+    // order_items 左连接 orders
+    // order_items_order_id 多个数据
     // order_id              order_customer_id
     val orderItemsRDD = getOrderItemsRDD()
     // 原来是 (x.getInt("order_customer_id").toString -> x.getInt("order_id").toString)
     //
-    val ordersArray = Array()
-    val ordersRDD = getOrdersRDD(x => {
-      ordersArray =
+    val ordersRDD = getOrdersRDD().map(x => {
+      (x._2,x._1)
     })
-    val CustomerInfosResult = orderItemsRDD.leftOuterJoin(ordersRDD)
+
+//    ordersRDD.foreach(println)
+
+    //order_items 左关联 orders 的结果
+    //order_id  (order_items中的数据, orders中的数据)
+    // 对应的
+    // order_id
+    // (order_item_id
+    // order_item_order_id
+    // order_item_product_id
+    // order_item_quantity
+    // order_item_subtotal), customer_id
+    //(45974,((114893,45974,957,1,299.98),None))
+    val OILOResult = orderItemsRDD.leftOuterJoin(ordersRDD)
+
+    //每个用户的订单数, key为用户名
+    val ordersNumForOneCustomer = getOrdersRDD().countByKey()
+//    ordersNumForOneCustomer.foreach(println)
+
+    //统计出每个用户, 消费总金额
+    // 统计出每个用户, 以每个用户为key, 对subtotal进行求和
+    val moneyForOneCustomer = OILOResult.map(x => {
+      (x._2._2.get.toInt , x._2._1.split(",")(4).replace(")","").toFloat)
+    }).reduceByKey(_+_).sortBy(x => x._1)
+//    moneyForOneCustomer.foreach(println)
+
+
+    //统计出每个用户, 购买过的产品类型的数量
+    // map输出为 customer_id, product_id
+    // 交换位置
+    // groupBy 对产品类型进行去重
+    //交换位置
+    val productNumForOneCustomer = OILOResult.map(x => {
+      (x._2._2.get.toInt, x._2._1.split(",")(2).toInt)
+    }).map(x => (x._2,x._1)).distinct()
+      .map(x => (x._2,x._1)).countByKey()
+    productNumForOneCustomer.foreach(println)
 
   }
+
+
+  //2. 统计每个店铺销售的商品品类的数量, 总销售额
+  val spark = SparkSession.builder()
+    .master("local[*]")
+    .appName("department infos").getOrCreate()
+
+  import spark.implicits._
+  import spark.sql
+
+
+  val hdfsConf = new Configuration()
+  val hdfs = FileSystem.get(hdfsConf)
+  def getHdfsFile() = {
+    var path = new Path("/user/orderdata/departments")
+    var fileInfos = Array[FileStatus]()
+    if(hdfs.isDirectory(path)){
+      fileInfos = hdfs.listStatus(path)
+    }
+    val result = fileInfos.map(x => {
+      x.getPath.toString
+    })
+    result
+  }
+
+
+  def getDepartmentInfos() = {
+    var ds = spark.read.text()
+    getHdfsFile.foreach(x => {
+      ds = spark.read.text(x)
+    })
+    ds.printSchema()
+    ds.createOrReplaceTempView("departments")
+    /*
+    *
+    * explode(
+    *           split(
+    *                   value
+    *                  ,'\n'
+    *               )
+    *        )
+    * */
+    val departmentResult = sql(
+      """
+        |select substring_index(line,'|',1) as department_id
+        |       , substring_index(line,'|',-1) as department_name
+        |from (
+        |     select explode(split(value,'\n')) as line
+        |     from departments
+        |)
+      """.stripMargin
+    )
+    departmentResult.show()
+//    departmentResult.printSchema()
+//    departmentResult.map(x => {
+//      s"${x.toString()}"
+//    }).write.text("/user/from-spark/department/")
+  }
+
+
+
+
+
 
 
   def main(args: Array[String]): Unit = {
     //    getCustomersInfoFromMysql()
 //    getOrdersNumForOneCustomer()
-    getOrderItemsRDD.foreach(println)
-
-
+//    getCustomerInfos()
+//    getHdfsFile()
+    getDepartmentInfos()
 
   }
 
