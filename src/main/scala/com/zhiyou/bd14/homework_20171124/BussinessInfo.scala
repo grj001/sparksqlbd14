@@ -117,10 +117,57 @@ object BussinessInfo {
 
   }
 
+////////////////////////////////////////////////////////////////////////////////////////////
+
+  def getOrderItemsRDD() = {
+    val sql = "select * from order_items where order_item_id>=? and order_item_id<=?"
+    //需要获取订单单元的order_item_id
+    // 对应的order_item_order_id
+    // order_item_product_id
+    // order_item_quantity
+    // order_item_subtotal
+    val mysqlRDD = new JdbcRDD(sc,getMysqlConnection,sql, 1,172198,2, x => {
+      (x.getInt("order_item_order_id").toString
+        , (x.getInt("order_item_id")
+            , x.getInt("order_item_order_id")
+            , x.getInt("order_item_product_id")
+            , x.getString("order_item_quantity")
+            , x.getString("order_item_subtotal")
+          ).toString()
+      )
+    })
+    mysqlRDD
+  }
+
+
+
+
+  // 统计出每个用户的订单数, 消费总金额, 购买过的产品类型的数量
+  def getCustomerInfos() = {
+    // order_items中有product_id(产品类型, 每个item的消费总金额)
+    //根据order_id进行groupBy, 和count能够得到 结果
+    //order_items 左连接 orders
+    // order_items_order_id
+    // order_id              order_customer_id
+    val orderItemsRDD = getOrderItemsRDD()
+    // 原来是 (x.getInt("order_customer_id").toString -> x.getInt("order_id").toString)
+    //
+    val ordersArray = Array()
+    val ordersRDD = getOrdersRDD(x => {
+      ordersArray =
+    })
+    val CustomerInfosResult = orderItemsRDD.leftOuterJoin(ordersRDD)
+
+  }
+
 
   def main(args: Array[String]): Unit = {
     //    getCustomersInfoFromMysql()
-    getOrdersNumForOneCustomer()
+//    getOrdersNumForOneCustomer()
+    getOrderItemsRDD.foreach(println)
+
+
+
   }
 
 
