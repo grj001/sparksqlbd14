@@ -1,17 +1,15 @@
 package com.zhiyou.bd14.homework_20171124
 
-import java.sql.{DriverManager, ResultSet}
+import java.sql.DriverManager
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
-import org.apache.hadoop.io.{IntWritable, Text}
+import org.apache.hadoop.io.Text
 import org.apache.hadoop.mapred.TextOutputFormat
-import org.apache.spark.rdd.{JdbcRDD, PairRDDFunctions, RDD}
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.rdd.{JdbcRDD, RDD}
+import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.{SparkConf, SparkContext}
 
-import scala.collection.mutable.ArrayBuffer
-import scala.reflect.ClassTag
 
 object BussinessInfo {
 
@@ -82,8 +80,8 @@ object BussinessInfo {
         case None => "没有数据"
         case Some(a) => a
       }
-//      println(x)
-//      println(s"用户id:${x._1}, 订单号:${x._2._1}, 用户名称:${customerFname}")
+      //      println(x)
+      //      println(s"用户id:${x._1}, 订单号:${x._2._1}, 用户名称:${customerFname}")
     })
 
     val ordersNumForOneCustomerResult = ordersLeftJoinCustomerResult.map(x => {
@@ -91,7 +89,7 @@ object BussinessInfo {
       //key为用户id, value为订单id
       //(customer_id , (order_id, customer_fname))
       (x._2._1, x._1)
-    }).reduceByKey(_+_).sortBy(x =>x._1.toInt,false,1)
+    }).reduceByKey(_ + _).sortBy(x => x._1.toInt, false, 1)
     ordersNumForOneCustomerResult.foreach(x => {
       println(s"用户id:${x._1}, 订单数量:${x._2}")
     })
@@ -100,37 +98,35 @@ object BussinessInfo {
       "/user/spark-orderdata/ordersnum-for-onecustomer"
       , classOf[Text]
       , classOf[Text]
-      , classOf[TextOutputFormat[Text,Text]])
+      , classOf[TextOutputFormat[Text, Text]])
 
   }
 
-////////////////////////////////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////////////////////////////////
 
-  def getOrderItemsRDD() = {
+  def getOrderItemsRDD(): JdbcRDD[(String, String)] = {
     val sql = "select * from order_items where order_item_id>=? and order_item_id<=?"
     //需要获取订单单元的order_item_id
     // 对应的order_item_order_id
     // order_item_product_id
     // order_item_quantity
     // order_item_subtotal
-    val mysqlRDD = new JdbcRDD(sc,getMysqlConnection,sql, 1,172198,2, x => {
+    val mysqlRDD = new JdbcRDD(sc, getMysqlConnection, sql, 1, 172198, 2, x => {
       (x.getInt("order_item_order_id").toString
         , (x.getInt("order_item_id")
-            , x.getInt("order_item_order_id")
-            , x.getInt("order_item_product_id")
-            , x.getString("order_item_quantity")
-            , x.getString("order_item_subtotal")
-          ).toString()
+        , x.getInt("order_item_order_id")
+        , x.getInt("order_item_product_id")
+        , x.getString("order_item_quantity")
+        , x.getString("order_item_subtotal")
+      ).toString()
       )
     })
     mysqlRDD
   }
 
 
-
-
   // 统计出每个用户的订单数, 消费总金额, 购买过的产品类型的数量
-  def getCustomerInfos() = {
+  def getCustomerInfos():Unit = {
     // order_items中有product_id(产品类型, 每个item的消费总金额)
     // 根据order_id进行groupBy, 和count能够得到 结果
     // order_items 左连接 orders
@@ -140,10 +136,10 @@ object BussinessInfo {
     // 原来是 (x.getInt("order_customer_id").toString -> x.getInt("order_id").toString)
     //
     val ordersRDD = getOrdersRDD().map(x => {
-      (x._2,x._1)
+      (x._2, x._1)
     })
 
-//    ordersRDD.foreach(println)
+    //    ordersRDD.foreach(println)
 
     //order_items 左关联 orders 的结果
     //order_id  (order_items中的数据, orders中的数据)
@@ -159,14 +155,14 @@ object BussinessInfo {
 
     //每个用户的订单数, key为用户名
     val ordersNumForOneCustomer = getOrdersRDD().countByKey()
-//    ordersNumForOneCustomer.foreach(println)
+    //    ordersNumForOneCustomer.foreach(println)
 
     //统计出每个用户, 消费总金额
     // 统计出每个用户, 以每个用户为key, 对subtotal进行求和
     val moneyForOneCustomer = OILOResult.map(x => {
-      (x._2._2.get.toInt , x._2._1.split(",")(4).replace(")","").toFloat)
-    }).reduceByKey(_+_).sortBy(x => x._1)
-//    moneyForOneCustomer.foreach(println)
+      (x._2._2.get.toInt, x._2._1.split(",")(4).replace(")", "").toFloat)
+    }).reduceByKey(_ + _).sortBy(x => x._1)
+    //    moneyForOneCustomer.foreach(println)
 
 
     //统计出每个用户, 购买过的产品类型的数量
@@ -176,8 +172,8 @@ object BussinessInfo {
     //交换位置
     val productNumForOneCustomer = OILOResult.map(x => {
       (x._2._2.get.toInt, x._2._1.split(",")(2).toInt)
-    }).map(x => (x._2,x._1)).distinct()
-      .map(x => (x._2,x._1)).countByKey()
+    }).map(x => (x._2, x._1)).distinct()
+      .map(x => (x._2, x._1)).countByKey()
     productNumForOneCustomer.foreach(println)
 
   }
@@ -194,10 +190,11 @@ object BussinessInfo {
 
   val hdfsConf = new Configuration()
   val hdfs = FileSystem.get(hdfsConf)
-  def getHdfsFile() = {
-    var path = new Path("/user/orderdata/departments")
+
+  def getHdfsFile(fileName: String): Array[String] = {
+    var path = new Path("/user/orderdata/" + fileName)
     var fileInfos = Array[FileStatus]()
-    if(hdfs.isDirectory(path)){
+    if (hdfs.isDirectory(path)) {
       fileInfos = hdfs.listStatus(path)
     }
     val result = fileInfos.map(x => {
@@ -207,23 +204,13 @@ object BussinessInfo {
   }
 
 
-  def getDepartmentInfos() = {
+  def getDepartmentInfos():DataFrame  = {
     var ds = spark.read.text()
-    getHdfsFile.foreach(x => {
-      ds = spark.read.text(x)
-    })
+    ds = spark.read.text(getHdfsFile("departments")(0), getHdfsFile("departments")(1))
     ds.printSchema()
     ds.createOrReplaceTempView("departments")
-    /*
-    *
-    * explode(
-    *           split(
-    *                   value
-    *                  ,'\n'
-    *               )
-    *        )
-    * */
-    val departmentResult = sql(
+
+    val departmentsResult = sql(
       """
         |select substring_index(line,'|',1) as department_id
         |       , substring_index(line,'|',-1) as department_name
@@ -233,25 +220,161 @@ object BussinessInfo {
         |)
       """.stripMargin
     )
-    departmentResult.show()
-//    departmentResult.printSchema()
-//    departmentResult.map(x => {
-//      s"${x.toString()}"
-//    }).write.text("/user/from-spark/department/")
+//    departmentsResult.show()
+    //    departmentResult.printSchema()
+    //    departmentResult.map(x => {
+    //      s"${x.toString()}"
+    //    }).write.text("/user/from-spark/department/")
+    departmentsResult
   }
 
 
+  def getCategoryInfos():DataFrame  = {
+    var ds = spark.read.text()
+    ds = spark.read.text(getHdfsFile("categories")(0), getHdfsFile("categories")(1), getHdfsFile("categories")(2))
+    ds.printSchema()
+    ds.createOrReplaceTempView("categories")
+    val categoriesResult = sql(
+      //substring_index(line,'|',1) as department_id
+      """
+        |select substring_index(line,'|',1) as category_id
+        |       , substring_index(
+        |                      substring_index(line,'|',2)
+        |                     ,'|'
+        |                     ,-1
+        |                  ) as category_department_id
+        |       , substring_index(line,'|',-1) as category_name
+        |     from (
+        |           select explode(split(value, '\n')) as line
+        |           from categories
+        |     )
+      """.stripMargin
+    )
+//    categoriesResult.show()
+    categoriesResult
+  }
 
 
+  def getProductInfos():DataFrame  = {
+    var ds = spark.read.text()
+    ds = spark.read.text(getHdfsFile("products")(0), getHdfsFile("products")(1), getHdfsFile("products")(2))
+    ds.printSchema()
+    ds.createOrReplaceTempView("products")
+    val productsResult = sql(
+      //substring_index(line,'|',1) as department_id
+      """
+        |select substring_index(line,'|',1) as product_id
+        |       , substring_index(
+        |                      substring_index(line,'|',2)
+        |                     ,'|'
+        |                     ,-1
+        |                  ) as product_category_id
+        |     from (
+        |           select explode(split(value, '\n')) as line
+        |           from products
+        |     )
+      """.stripMargin
+    )
+//    productsResult.show()
+    productsResult
+  }
 
+
+  def getOrderItemInfos():DataFrame = {
+    var ds = spark.read.text()
+    ds = spark.read.text(getHdfsFile("order_items")(0), getHdfsFile("order_items")(1), getHdfsFile("order_items")(2))
+    ds.printSchema()
+    ds.createOrReplaceTempView("order_items")
+    val orderItemsResult = sql(
+      //substring_index(line,'|',1) as department_id
+      """
+        |select substring_index(line,'|',1) as order_item_id
+        |       , substring_index(
+        |                      substring_index(line,'|',2)
+        |                     ,'|'
+        |                     ,-1
+        |                  ) as order_item_order_id
+        |       , substring_index(
+        |                      substring_index(line,'|',3)
+        |                     ,'|'
+        |                     ,-1
+        |                  ) as order_item_product_id
+        |       , substring_index(
+        |                      substring_index(line,'|',4)
+        |                     ,'|'
+        |                     ,-1
+        |                  ) as order_item_quantity
+        |       , substring_index(
+        |                      substring_index(line,'|',5)
+        |                     ,'|'
+        |                     ,-1
+        |                  ) as order_item_subtotal
+        |       , substring_index(line,'|',-1) as order_item_product_price
+        |     from (
+        |           select explode(split(value, '\n')) as line
+        |           from order_items
+        |     )
+      """.stripMargin
+    )
+//    orderItemsResult.show()
+    orderItemsResult
+  }
+
+
+  //统计每个店铺销售的商品品类的数量, 总销售额
+  // 根据department 分组 , 对商品品类进行计数
+  // 品类是不会重复的, 一个表中
+  // 计算总销售额,
+  // 每个单元的总销售额  order_item_subtotal
+  // 多个order_item单元订单, 可以对应一个product
+  // 多个商品 对应一个品类
+  // 多个店铺, 可以出售一种商品品类
+  // order_items <-- products <-- categories <-- departmetnts
+  def getSellInfos():Unit = {
+    getDepartmentInfos().createOrReplaceTempView("departments")
+    getCategoryInfos().createOrReplaceTempView("categories")
+    getProductInfos().createOrReplaceTempView("products")
+    getOrderItemInfos().createOrReplaceTempView("order_items")
+
+    val categoriesNum = sql(
+      """
+        |  select category_department_id, count(1) category_num
+        |  from categories
+        |  group by category_department_id
+        |  order by category_department_id
+        |
+      """.stripMargin
+    )
+//    categoriesNum.show()
+
+    val departmentSubtotal = sql(
+      """
+        |   select department_id, ROUND(sum(order_item_subtotal),1) departmentS
+        |   from order_items
+        |   left join products on order_item_product_id = product_id
+        |   left join categories on product_category_id = category_id
+        |   left join departments on category_department_id = department_id
+        |   group by department_id
+        |   order by department_id
+      """.stripMargin
+    )
+    departmentSubtotal.show()
+
+  }
 
 
   def main(args: Array[String]): Unit = {
     //    getCustomersInfoFromMysql()
-//    getOrdersNumForOneCustomer()
-//    getCustomerInfos()
-//    getHdfsFile()
-    getDepartmentInfos()
+    //    getOrdersNumForOneCustomer()
+    //    getCustomerInfos()
+    //    getHdfsFile("categories")
+
+    //    getDepartmentInfos()
+//    getCategoryInfos()
+//        getProductInfos()
+//    getOrderItemInfos()
+
+    getSellInfos()
 
   }
 
